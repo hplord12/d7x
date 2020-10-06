@@ -1,5 +1,5 @@
 <?php
-// direct
+
 /**
  * @file
  * Drupal site-specific configuration file.
