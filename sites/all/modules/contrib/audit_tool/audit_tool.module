@@ -1,0 +1,1004 @@
+<?php
+
+/**
+ * @file
+ * This is the main module file.
+ */
+
+define('AUDIT_TOOL_DRUPAL_PROJECT_URL', 'https://www.drupal.org/project/');
+/**
+ * Implements hook_help().
+ */
+function audit_tool_help($path, $arg) {
+    if ($path == 'admin/help#audit_tool') {
+        $output = '<h3>' . t('About') . '</h3>';
+        $output .= '<p>' . t('The Drupal Audit Tool module allows the Administrator to generate report of your Drupal site for audit.') . '</p>';
+        return $output;
+    }
+}
+
+/**
+ * Implementation of hook_menu().
+ */
+function audit_tool_menu() {
+
+    $items['admin/config/audit-tool'] = array(
+        'title' => 'Drupal Audit Tool',
+        'description' => 'Generate your audit report',
+        'page callback' => 'system_admin_menu_block_page',
+        'access arguments' => array('administer site configuration'),
+        'file' => 'system.admin.inc',
+        'file path' => drupal_get_path('module', 'system'),
+    );
+
+    $items['admin/config/audit-tool/settings'] = array(
+        'title' => 'Report',
+        'description' => 'Generate the site audit report',
+        'page callback' => 'drupal_get_form',
+        'page arguments' => array('audit_tool_admin_settings'),
+        'access arguments' => array('administer site configuration'),
+        'type' => MENU_NORMAL_ITEM,
+    );
+    $items['admin/config/audit-tool/settings/report'] = array(
+        'page callback' => 'audit_tool_download_report',
+        'access arguments' => array('administer site configuration'),
+        'type' => MENU_CALLBACK,
+    );
+
+    return $items;
+}
+
+function audit_tool_admin_settings() {
+
+    $form = array();
+    $form['note'] = array(
+        '#markup' => '<p>This module will generate report of your site which you can use to Audit.</p>
+        <p>1. Goto <a target="_blank" href="http://auditdrupal.online" >auditdrupal.online</a> and create your account if not created.</p>
+        <p>2. Create your site from <a target="_blank" href="http://auditdrupal.online/#/sites/add" > Drupal Audit </a> and add your site info.</p>
+        <p>3. After site is created, upload the downloaded Report file to <b>Import Report File</b> on site edit section</p>',
+    );
+    $form['submit'] = array('#type' => 'submit', '#value' => t('Generate report'));
+    $form['#submit'] = array('audit_tool_generate_report');
+
+    return $form;
+}
+
+/**
+ * Page callback for forcing a file to download
+ */
+function audit_tool_download_report() {
+    $zip_file = "temporary://dmc/report.zip";
+    if (file_exists($zip_file)) {
+        $http_headers = array(
+            'Content-Type' => 'application/zip',
+            'Content-Disposition' => 'attachment; filename="' . 'report.zip' . '"',
+            'Content-Length' => filesize($zip_file),
+        );
+        if (strpos($_SERVER['HTTP_USER_AGENT'], 'MSIE')) {
+            $http_headers['Cache-Control'] = 'must-revalidate, post-check=0, pre-check=0';
+            $http_headers['Pragma'] = 'public';
+        } 
+         else {
+            $http_headers['Pragma'] = 'no-cache';
+        }
+        file_transfer($zip_file, $http_headers);
+    }
+     else {
+        return drupal_access_denied();
+    }
+}
+
+function audit_tool_generate_report($form, $form_state) {
+    audit_tool_batch_fix();
+}
+
+function audit_tool_batch_fix() {
+    $batch = array(
+        'operations' => array(),
+        'finished' => 'audit_tool_batch_fix_finished',
+        'title' => t('Generating Report'),
+        'init_message' => t('Starting...'),
+        'progress_message' => t('Processing @current out of @total.'),
+        'error_message' => t('Encountered an error during report generation.'),
+    );
+    $reports = array(
+        "basic_info" => 'audit_tool_batch_single_step_process',
+        "blocks_info" => 'audit_tool_batch_single_step_process',
+        "caching_info" => 'audit_tool_batch_single_step_process',
+        "cron_info" => 'audit_tool_batch_single_step_process',
+        "database_info" => 'audit_tool_batch_single_step_process',
+        "entity_info" => 'audit_tool_batch_single_step_process',
+        "module_info" => 'audit_tool_batch_multi_step_process',
+        "theme_info" => 'audit_tool_batch_multi_step_process',
+        "views_info" => 'audit_tool_batch_single_step_process'
+         );
+    foreach ($reports as $report => $callback) {
+        $batch['operations'][] = array($callback, array($report));
+    }
+    batch_set($batch);
+    batch_process('admin/config/audit-tool/settings'); // The path to redirect to when done.
+}
+
+/**
+ * The batch processor.
+ */
+function audit_tool_batch_single_step_process($report, &$context) {
+    $report_name = ucwords(str_replace("_", " ", $report));
+    $context['message'] = "Generating " . $report_name . " report...";
+    // dpm($report());
+    $data = $report();
+    $report_dir = "temporary://dmc/report/";
+    file_prepare_directory($report_dir, FILE_CREATE_DIRECTORY);
+    file_unmanaged_save_data($data, $report_dir . $report . ".json", FILE_EXISTS_REPLACE);
+    sleep(1);
+}
+
+/**
+ * The batch processor.
+ */
+function audit_tool_batch_multi_step_process($report, &$context) {
+    if ($report == 'module_info') {
+        $extensions = array_keys(system_rebuild_module_data());
+    } 
+     elseif ($report == 'theme_info') {
+        $extensions = array_keys(system_rebuild_theme_data());
+    }
+    if (empty($context['sandbox'])) {
+        $context['sandbox']['progress'] = 0;
+        $context['sandbox']['current_extension'] = '';
+        $context['sandbox']['processed_extensions'] = array();
+        $context['sandbox']['max'] = count($extensions);
+    }
+    $un_processed = array_diff($extensions, $context['sandbox']['processed_extensions']);
+    $extension = end($un_processed);
+
+    $data = $report($extension);
+    $report_dir = "temporary://dmc/report/" . $report . "/";
+    file_prepare_directory($report_dir, FILE_CREATE_DIRECTORY);
+    file_unmanaged_save_data($data, $report_dir . $extension . ".json", FILE_EXISTS_REPLACE);
+
+    $report_name = ucwords(str_replace("_", " ", $report));
+    $context['results'][] = $extension;
+    $context['sandbox']['progress']++;
+    $context['sandbox']['current_extension'] = $extension;
+    $context['sandbox']['processed_extensions'][] = $extension;
+    $context['message'] = "Generating " . $report_name . " report... : " . $extension . " : " . $context['sandbox']['progress'] . "/" . $context['sandbox']['max'];
+
+    if ($context['sandbox']['progress'] != $context['sandbox']['max']) {
+        $context['finished'] = $context['sandbox']['progress'] / $context['sandbox']['max'];
+    }
+}
+
+/**
+ * The batch finish handler.
+ */
+function audit_tool_batch_fix_finished($success, $results, $operations) {
+    if ($success) {
+        start_report_download();
+        drupal_set_message(t('Report generation completed successfully! <a href="' . url('admin/config/audit-tool/settings/report') . '">click here</a> to download'));
+    } 
+     else {
+        $error_operation = reset($operations);
+        $message = t('An error occurred while processing %error_operation with arguments: @arguments', array(
+            '%error_operation' => $error_operation[0],
+            '@arguments' => print_r($error_operation[1], TRUE),
+        ));
+        drupal_set_message($message, 'error');
+    }
+}
+
+function start_report_download() {
+
+    $report_dir = drupal_realpath('temporary://dmc/report');
+    //this folder must be writeable by the server
+    $backup = drupal_realpath('temporary://dmc');
+    $zip_file = $backup . '/report.zip';
+
+    if (createzip($report_dir, $zip_file)) {
+        file_unmanaged_delete_recursive("temporary://dmc/report/");
+    } 
+     else {
+        $message = t('An error occurred while generating zip.');
+        drupal_set_message(check_plain($message), 'error');exit;
+    }
+}
+
+function createzip($source, $destination) {
+    if (!extension_loaded('zip') || !file_exists($source)) {
+        return FALSE;
+    }
+
+    $zip = new ZipArchive();
+    if (!$zip->open($destination, ZIPARCHIVE::CREATE)) {
+        return FALSE;
+    }
+
+    $source = str_replace('\\', '/', realpath($source));
+
+    if (is_dir($source) === TRUE) {
+        $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($source), RecursiveIteratorIterator::SELF_FIRST);
+
+        foreach ($files as $file) {
+            $file = str_replace('\\', '/', $file);
+
+            // Ignore "." and ".." folders
+            if (in_array(substr($file, strrpos($file, '/') + 1), array('.', '..'))) {
+                continue;
+            }
+
+            $file = realpath($file);
+
+            if (is_dir($file) === TRUE) {
+                $zip->addEmptyDir(str_replace($source . '/', '', $file . '/'));
+            } 
+             elseif (is_file($file) === TRUE) {
+                $zip->addFromString(str_replace($source . '/', '', $file), file_get_contents($file));
+            }
+        }
+    } 
+     elseif (is_file($source) === TRUE) {
+        $zip->addFromString(basename($source), file_get_contents($source));
+    }
+
+    return $zip->close();
+}
+
+// Reports callback
+
+function basic_info() {
+    $site_info = array('site_name', 'site_slogan', 'site_mail', 'site_default_country', 'site_frontpage', 'site_403', 'site_404');
+    $result = array('drupal_version' => VERSION);
+    foreach ($site_info as $info) {
+        $result[$info] = variable_get($info);
+    }
+
+    return json_encode($result, JSON_PRETTY_PRINT);
+}
+function blocks_info() {
+    $query = db_select('block', 'b');
+    // $query->join('block_custom', 'bc', 'b.bid = bc.bid');
+    $block_info = $query
+        ->fields('b')
+        ->orderBy('b.region')
+        ->orderBy('b.weight')
+        ->orderBy('b.module')
+        ->addTag('block_load')
+        ->addTag('translatable')
+        ->execute();
+    $result = $block_info->fetchAll();
+    return json_encode($result, JSON_PRETTY_PRINT);
+}
+function caching_info() {
+    $output = array();
+    if (module_exists('redis')) {
+        $output['redis'] = 'redis';
+    }
+    if (module_exists('memcache')) {
+        $output['memcache'] = 'memcache';
+    }
+    return json_encode($output, JSON_PRETTY_PRINT);
+}
+function cron_info() {
+    $output = array();
+    $output['cron_implemented_module'] = module_implements('cron');
+    if (module_exists('ultimate_cron')) {
+        $output['jobs']['ultimate_cron'] = _ultimate_cron_job_load_all();
+    }
+    if (module_exists('elysia_cron')) {
+        //TODO:: impliment the details of cron
+        $output['jobs']['elysia_cron'] = elysia_cron_module_jobs();
+    }
+    return json_encode($output, JSON_PRETTY_PRINT);
+}
+function get_db_size($dbsize) {
+    $bytes = array('KB', 'KB', 'MB', 'GB', 'TB');
+    if ($dbsize < 1024) {
+        $dbsize = 1;
+    }
+
+    for ($i = 0; $dbsize > 1024; $i++) {
+        $dbsize /= 1024;
+    }
+
+    $get_db_size['size'] = ceil($dbsize);
+    $get_db_size['type'] = $bytes[$i];
+    return $get_db_size;
+}
+function database_info() {
+    $output = array();
+
+    // Database size = table size + index size:
+    $rows = db_query("SHOW TABLE STATUS")->fetchAll();
+    $dbssize = 0;
+
+    foreach ($rows as $row) {
+        $dbssize += $row->Data_length + $row->Index_length;
+    }
+
+    $output['size_exact'] = $dbssize;
+    $output['size'] = get_db_size($dbssize);
+    $output['table'] = $rows;
+
+    return json_encode($output, JSON_PRETTY_PRINT);
+}
+function entity_info() {
+    $entity_info = entity_get_info();
+
+    $output = array();
+    foreach (array_keys($entity_info) as $entity_type) {
+        $output[$entity_type] = array();
+        $get_count = FALSE;
+        if (isset($entity_info[$entity_type]['base table']) && $entity_info[$entity_type]['base table'] != '') {
+            $get_count = TRUE;
+        }
+        foreach ($entity_info[$entity_type]['bundles'] as $bundle => $info) {
+            $formated_info = $info;
+            unset($formated_info['rdf_mapping']);
+            // Get field data
+            $field_info_instances = field_info_instances($entity_type, $bundle);
+            foreach ($field_info_instances as $key => $value) {
+                $field_data = field_info_field($value['field_name']);
+                $value['type'] = $field_data['type'];
+                $formated_info['fields'][$key] = $value;
+            }
+
+            //Get Content count
+            $content_count = 0;
+            $content_published_count = 0;
+            if ($get_count) {
+                try {
+                    $query = new EntityFieldQuery();
+                    $query->entityCondition('entity_type', $entity_type)
+                        ->entityCondition('bundle', $bundle)
+                        ->count();
+                    $content_count = $query->execute();
+
+                    $query = new EntityFieldQuery();
+                    $query->entityCondition('entity_type', $entity_type)
+                        ->entityCondition('bundle', $bundle)
+                        ->propertyCondition('status', 1)
+                        ->count();
+                    $content_published_count = $query->execute();
+                } catch (Exception $e) {
+
+                }
+            }
+            $formated_info['count'] = array('total' => $content_count, 'published' => $content_published_count);
+            $output[$entity_type][$bundle] = $formated_info;
+        }
+    }
+    return json_encode($output, JSON_PRETTY_PRINT);
+
+}
+function module_info($module_name) {
+
+    $modules = system_rebuild_module_data();
+    $output = array();
+
+    $implementations = cache_get('module_implements', 'cache_bootstrap');
+    if ($implementations === FALSE) {
+        $implementations = array();
+    } 
+     else {
+        $implementations = $implementations->data;
+    }
+    $hooks_implimented = array();
+    foreach ($implementations as $hook => $implimented_modules) {
+        foreach ($implimented_modules as $implimented_module => $group) {
+            $hooks_implimented[$implimented_module][] = $hook;
+        }
+    }
+    $file_list = array();
+    $total = count($modules);
+    $i = 1;
+
+    $module = $modules[$module_name];
+
+    $formated_data = $module;
+
+    $files = array_keys(file_scan_directory(drupal_get_path('module', $module->name), '/\.*/'));
+    $file_list[$module_name] = $files;
+    $files_details = array();
+
+    foreach ($files as $file) {
+        if (strpos(mime_content_type($file), "text") === 0) {
+            $tokens = @token_get_all(file_get_contents($file));
+            $file_functions = array();
+            $line_count = 0;
+
+            foreach ($tokens as $n => $token) {
+                if (is_array($token)) {
+                    if ($token[0] == T_FUNCTION) {
+                        $file_functions[] = isset($tokens[$n + 2][1]) ? $tokens[$n + 2][1] : '';
+                    }
+                }
+            }
+            $line_count = intval(exec("wc -l '$file'"));
+            $files_details[] = array(
+                'uri' => $file,
+                'lines' => $line_count,
+                'functions' => $file_functions,
+                'coding_standard' => NULL
+            );
+        }
+    }
+    $formated_data->hooks_implimented = isset($hooks_implimented[$module_name]) ? $hooks_implimented[$module_name] : '';
+    $formated_data->file_data = $files_details;
+
+    // Drupal coding standard detail.
+    $coding_details = array();
+    $code_review = array();
+    $security_details = array();
+    $security_review = array();
+    $info = $formated_data->info;
+    $project = array_key_exists('project', $info) ? $info['project'] : '';
+    $pack = array_key_exists('package', $info) ? $info['package'] : '';
+    $datestamp = array_key_exists('datestamp', $info) ? $info['datestamp'] : '';
+    if ($pack != 'Core'  && $pack != 'Testing' && $project != 'libraries') {
+        // Check module contrib or custom.
+        $custom_true = audit_tool_drupal_module_check($module_name);
+        if ($custom_true) {
+            // Check coding standard of module.
+            $code_review = audit_tool_review_code($module_name);
+            $security_review = additional_security_check($module_name);
+            if (!empty($security_review)) {
+                $path = t('The following potentially malicious paths have been discovered: @list_menu', array(
+                    '@list_menu' => implode(', ', array_keys($security_review['menu_router'])),
+                ));
+                $results = t('The following potentially malicious functions called: @list', array(
+                    '@list' => implode(', ', array_values($security_review['menu_router'])),
+                ));
+                $security_details[] = array(
+                    'menu_path' => $path,
+                    'results' => $results,
+                );
+            }
+        }
+    }
+    foreach ($formated_data->file_data as $file_key => $file_value) {
+        foreach ($code_review[$module_name] as $review_key => $review_value) {
+            if ($file_value['uri'] == $review_value['file_name']) {
+                $file_value['coding_standard'] = $review_value['results'];
+                $formated_data->file_data[$file_key] = $file_value;
+            }
+        }
+    }
+    if (!empty($security_details)) {
+        $formated_data->security_review_data = $security_details;
+    }
+    $output[$module_name] = $formated_data;
+
+    return json_encode($output, JSON_PRETTY_PRINT);
+}
+function rule_info() {
+
+}
+function system_info() {
+
+}
+function theme_info($theme_name) {
+    $themes = system_rebuild_theme_data();
+    $output = array();
+
+    $theme = $themes[$theme_name];
+
+    $formated_data = $theme;
+    $files = array_keys(file_scan_directory(drupal_get_path('theme', $theme->name), '/\.*/'));
+    $files_details = array();
+    foreach ($files as $file) {
+        if (strpos(mime_content_type($file), "text") === 0) {
+            $tokens = @token_get_all(file_get_contents($file));
+            $file_functions = array();
+            $line_count = 0;
+
+            foreach ($tokens as $n => $token) {
+                if (is_array($token)) {
+                    if ($token[0] == T_FUNCTION) {
+                        $file_functions[] = $tokens[$n + 2][1];
+                    }
+                }
+            }
+
+            $line_count = intval(exec("wc -l '$file'"));
+            $files_details[] = array(
+                'uri' => $file,
+                'lines' => $line_count,
+                'functions' => $file_functions,
+                'coding_standard' => NULL
+            );
+        }
+    }
+    $formated_data->file_data = $files_details;
+
+      // Drupal coding standard detail.
+      $coding_details = array();
+      $code_review = array();
+      $security_details = array();
+      $security_review = array();
+      $info = $formated_data->info;
+      $project = array_key_exists('project', $info) ? $info['project'] : '';
+      $pack = array_key_exists('package', $info) ? $info['package'] : '';
+      $datestamp = array_key_exists('datestamp', $info) ? $info['datestamp'] : '';
+
+      if ($pack != 'Core' && $pack != 'Other' && $pack != 'Testing' && $project != 'libraries') {
+          // Check module contrib or custom.
+          $custom_true = audit_tool_drupal_module_check($theme_name);
+          if ($custom_true) {
+              // Check coding standard of module.
+              $code_review = audit_tool_review_code($theme_name);
+          }
+      }
+      foreach ($formated_data->file_data as $file_key => $file_value) {
+          foreach ($code_review[$theme_name] as $review_key => $review_value) {
+              if ($file_value['uri'] == $review_value['file_name']) {
+                  $file_value['coding_standard'] = $review_value['results'];
+                  $formated_data->file_data[$file_key] = $file_value;
+              }
+          }
+      }
+    $output[$theme_name] = $formated_data;
+    return json_encode($output, JSON_PRETTY_PRINT);
+}
+function views_info() {
+    $views = views_get_all_views();
+    $views_data = array();
+    $i = 0;
+    foreach ($views as $key => $value) {
+        $views_data[$i]['vid'] = $key;
+        $views_data[$i]['db_table'] = $value->db_table;
+        $views_data[$i]['base_table'] = $value->base_table;
+        $views_data[$i]['base_field'] = $value->base_field;
+        $views_data[$i]['human_name'] = $value->human_name;
+        $views_data[$i]['disabled'] = $value->disabled;
+        $views_data[$i]['total_rows'] = $value->total_rows;
+
+        $displays = $value->display;
+        foreach ($displays as $ikey => $ivalue) {
+            $views_data[$i]['display'][$ikey]['display_id'] = $ivalue->id;
+            $views_data[$i]['display'][$ikey]['db_table'] = $ivalue->db_table;
+            $views_data[$i]['display'][$ikey]['display_title'] = $ivalue->display_title;
+            $views_data[$i]['display'][$ikey]['display_plugin'] = $ivalue->display_plugin;
+        }
+
+        $views_data[$i]['table'] = property_exists($value, 'table') ? $value->table : "N/A";
+        $views_data[$i]['type'] = property_exists($value, 'type') ? $value->type : "N/A";
+        $views_data[$i]['export_type'] = property_exists($value, 'export_type') ? $value->export_type : "N/A";
+        $views_data[$i]['export_module'] = property_exists($value, 'export_module') ? $value->export_module : "N/A";
+        $views_data[$i]['description'] = $value->description;
+        $i++;
+    }
+    return json_encode($views_data, JSON_PRETTY_PRINT);
+}
+
+/**
+ * This function check the module is custom module.
+ */
+  function audit_tool_drupal_module_check($machine_name) {
+    $site_url = AUDIT_TOOL_DRUPAL_PROJECT_URL . $machine_name;
+    $error_report = custom_module_checker_is_404($site_url);
+    if ($error_report == 0) {
+      return TRUE;
+    }
+    else {
+      return FALSE;
+    }
+  }
+
+/**
+ * This is the helper function for check the module in drupal.org.
+ */
+  function custom_module_checker_is_404($url) {
+    $handle = curl_init($url);
+    curl_setopt($handle, CURLOPT_RETURNTRANSFER, TRUE);
+
+    /* Check for 404 (file not found). */
+    $httpcode = curl_getinfo($handle, CURLINFO_HTTP_CODE);
+    curl_close($handle);
+
+    /* If the document has loaded successfully without any redirection or error */
+    if ($httpcode >= 200 && $httpcode < 300) {
+      return 1;
+    }
+    else {
+      return 0;
+    }
+  }
+
+/**
+ * This function review coding standard.
+ */
+function audit_tool_review_code($module_name = '') {
+  $arg = '';
+  $code_review = array();
+  // Bootstrap enough to run.
+  if (!function_exists('_coder_review_reviews')) {
+    require_once 'coder_review.common.inc';
+  }
+  $settings = _coder_review_get_default_settings($arg);
+  $settings['coder_modules'] = !empty($module_name) ? array($module_name => $module_name) : array();
+  $settings += array(
+    'coder_core' => 1,
+    'coder_includes' => 1,
+    'coder_files' => 1,
+    'coder_active_modules' => 1,
+    'coder_ignore' => 1,
+  );
+  $coder_form = _coder_review_settings_form_helper($settings, $system, $files);
+  if ($coder_form) {
+    // Get this list of the reviews to perform.
+    $avail_reviews = _coder_review_reviews();
+    $reviews = array();
+    foreach ($settings['coder_reviews'] as $name => $checked) {
+      if ($checked) {
+        $reviews[$name] = $avail_reviews[$name];
+      }
+    }
+    // Loop through the selected modules.
+    if (isset($system)) {
+      // Determine which file extensions to include, based on the rules.
+      $php_extensions = _coder_review_php_ext();
+      $include_extensions = _coder_review_get_reviews_extensions($php_extensions, $reviews);
+      $includes = array_merge($php_extensions, $include_extensions);
+      // Avoid duplicate includes.
+      $dups = $stats = array();
+      $patch = '';
+      foreach ($system as $name => $checked) {
+        if ($checked) {
+          $filename = isset($files[$name]) ? $files[$name] : FALSE;
+          if (!$filename) {
+            _message(t('Code review file for %module not found', array('%module' => $name)), 'error');
+            continue;
+          }
+          if ($settings['coder_patches']) {
+            $patch = $filename;
+            $filename = $name;
+          }
+          $pathinfo = pathinfo($filename);
+          $coder_args = array(
+            '#reviews' => $reviews,
+            '#severity' => $settings['coder_severity'],
+            '#filename' => $filename,
+            '#patch' => $patch,
+            '#php_extensions' => $php_extensions,
+            '#include_extensions' => $include_extensions,
+            '#cache' => TRUE,
+            '#settings_ignore' => $settings['coder_ignore'],
+          );
+          if (function_exists('drupal_alter')) {
+            drupal_alter('coder_review_args', $coder_args);
+          }
+          // Process this one file.
+          $results = do_coder_reviews($coder_args);
+          $stats[$filename] = $results['#stats'];
+          unset($results['#stats']);
+          if (function_exists('module_invoke_all')) {
+            module_invoke_all('coder_review_results_view', $results);
+          }
+          if ($results) {
+            $code_review[$name][] = array(
+              'file_name' => $filename,
+              'results' => $results,
+            );
+          }
+          else {
+            $code_review[$name][] = array(
+              'file_name' => $filename,
+              'results' => 'No Problems Found',
+            );
+          }
+          // Process the same directory include files.
+          if ($settings['coder_includes']) {
+            $path = str_replace('\\', '/', dirname(realpath($filename)));
+            if ($path && !isset($dups[$path])) {
+              if ($pathinfo['extension'] == 'module') {
+                $coder_args['#php_minor'] = 1;
+              }
+              $dups[$path] = 1;
+              $regex = '/\.(' . implode('|', $includes) . ')$/';
+              $includefiles = _file_list($pathinfo['dirname'], $regex);
+              $includefiles = array_diff($includefiles, $system);
+              if ($includefiles) {
+                sort($includefiles);
+                $offset = strpos($filename, dirname($filename));
+                $stats[$filename]['#includes'] = _coder_review_page_form_includes_helper(
+                  $code_review,
+                  $coder_args,
+                  $name,
+                  $includefiles,
+                  $offset,
+                  $settings['coder_includes_exclusions']);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return $code_review;
+}
+
+/**
+ * {@inheritdoc}
+ */
+function _coder_review_settings_form_helper(array $settings, &$system, &$files) {
+  // Bootstrap enough to run.
+  if (!function_exists('_coder_review_reviews')) {
+    require_once realpath(__DIR__) . '/coder_review.common.inc';
+  }
+  if (function_exists('db_query')) {
+    // Get the modules.
+    $sql = "SELECT name, filename, type, status FROM {system} WHERE type='module' OR type='theme' ORDER BY weight ASC, filename ASC";
+    $result = db_query($sql);
+    $system_modules = $system_themes = array();
+    foreach ($result as $system) {
+      $display_name = $system->name;
+      if ($system->status) {
+        // $display_name .= ' (' . _t('active') . ')';
+        $system_active[$system->name] = $system->name;
+      }
+      if ($system->type == 'module') {
+        $system_modules[$system->name] = $system->name;
+      }  
+      else {
+        $system_themes[$system->name] = $system->name;
+      }
+      $files[$system->name] = $system->filename;
+    }
+    $modules = isset($settings['coder_modules']) && is_array($settings['coder_modules']) ? $settings['coder_modules'] : array();
+    $system = $modules;
+  }
+  return $system;
+}
+
+/**
+ * {@inheritdoc}
+ */
+function _coder_review_page_form_includes_helper(array &$code_review, array $coder_args, $name, array $files, $offset, $exclusions) {
+  $stats = array();
+  $coder_args['#name'] = $name;
+  $weight = 0;
+  $temp = array();
+  $exclusions = str_replace(array("\r\n", "\r", "\n", '/', '*', '.'), array('|', '|', '|', '\\/', '.*', '\\.'), $exclusions);
+  foreach ($files as $file) {
+    if (!empty($exclusions) && preg_match("/$exclusions/", $file)) {
+      // Don't review this file.
+      continue;
+    }
+    $filename = _substr($file, $offset);
+    $php_extensions = _coder_review_php_ext();
+    $coder_args['#filename'] = $filename;
+    $coder_args['#php_extensions'] = $php_extensions;
+    $results = do_coder_reviews($coder_args);
+    $stats[$filename] = $results['#stats'];
+    unset($results['#stats']);
+    if (function_exists('module_invoke_all')) {
+      module_invoke_all('coder_review_results_view', $results);
+    }
+    if (empty($results)) {
+      $results[] = 'No Problems Found';
+    }
+    $code_review[$name][] = array(
+      'file_name' => $filename,
+      'results' => $results,
+    );
+  }
+  return $stats;
+}
+
+/**
+ * {@inheritdoc}
+ */
+function additional_security_check($module_name) {
+  if (!empty($module_name)) {
+    $menu_path = array();
+    $registry = array();
+    $hook_menu = $module_name . '_menu';
+    if (function_exists($hook_menu)) {
+      $router_items = call_user_func($hook_menu);
+      if (isset($router_items) && is_array($router_items)) {
+        foreach ($router_items as $key => $path) {
+          $menu_path[$key] = $path;
+        }
+      }
+    }
+    // DRUPAL SA-CORE-2014-005 Exploits.
+    $dangerous_callbacks = array(
+      'php_eval' => 'executes arbitrary PHP code',
+      'assert' => 'executes arbitrary PHP code',
+      'exec' => 'executes external programs',
+      'passthru' => 'executes external programs and displays raw output',
+      'system' => 'executes external programs and displays raw output',
+      'shell_exec' => 'executes commands via shell and returns complete output',
+      'popen' => 'opens process file pointer',
+      'proc_open' => 'executes a command, opens file pointers for I/O',
+      'pcntl_exec' => 'executes program in current process space',
+      'eval' => 'evalues string as PHP code',
+      'preg_replace' => 'can be used to eval() on match',
+      'create_function' => 'creates anonymous functions',
+      'include' => 'includes and evaluates files',
+      'include_once' => 'includes and evaluates files',
+      'require' => 'includes and evaluates files',
+      'require_once' => 'includes and evaluates files',
+      'ob_start' => 'can specify callback function',
+      'array_diff_uassoc' => 'can specify callback function',
+      'array_diff_ukey' => 'can specify callback function',
+      'array_filter' => 'can specify callback function',
+      'array_intersect_uassoc' => 'can specify callback function',
+      'array_intersect_ukey' => 'can specify callback function',
+      'array_map' => 'can specify callback function',
+      'array_reduce' => 'can specify callback function',
+      'array_udiff_assoc' => 'can specify callback function',
+      'array_udiff_uassoc' => 'can specify callback function',
+      'array_udiff' => 'can specify callback function',
+      'array_uintersect_assoc' => 'can specify callback function',
+      'array_uintersect_uassoc' => 'can specify callback function',
+      'array_uintersect' => 'can specify callback function',
+      'array_walk_recursive' => 'can specify callback function',
+      'array_walk' => 'can specify callback function',
+      'assert_options' => 'can specify callback function',
+      'uasort' => 'can specify callback function',
+      'uksort' => 'can specify callback function',
+      'usort' => 'can specify callback function',
+      'preg_replace_callback' => 'can specify callback function',
+      'spl_autoload_register' => 'can specify callback function',
+      'iterator_apply' => 'can specify callback function',
+      'call_user_func' => 'can specify callback function',
+      'call_user_func_array' => 'can specify callback function',
+      'register_shutdown_function' => 'can specify callback function',
+      'register_tick_function' => 'can specify callback function',
+      'set_error_handler' => 'can specify callback function',
+      'set_exception_handler' => 'can specify callback function',
+      'session_set_save_handler' => 'can specify callback function',
+      'sqlite_create_aggregate' => 'can specify callback function',
+      'sqlite_create_function' => 'can specify callback function',
+      'phpinfo' => 'information disclosure',
+      'posix_mkfifo' => 'information disclosure',
+      'posix_getlogin' => 'information disclosure',
+      'posix_ttyname' => 'information disclosure',
+      'getenv' => 'information disclosure',
+      'get_current_user' => 'information disclosure',
+      'proc_get_status' => 'information disclosure',
+      'get_cfg_var' => 'information disclosure',
+      'disk_free_space' => 'information disclosure',
+      'disk_total_space' => 'information disclosure',
+      'diskfreespace' => 'information disclosure',
+      'getcwd' => 'information disclosure',
+      'getlastmo' => 'information disclosure',
+      'getmygid' => 'information disclosure',
+      'getmyinode' => 'information disclosure',
+      'getmypid' => 'information disclosure',
+      'getmyuid' => 'information disclosure',
+      'echo' => 'information disclosure',
+      'print' => 'information disclosure',
+      'extract' => 'imports variables',
+      'parse_str' => 'imports variables',
+      'putenv' => 'sets environment variables',
+      'ini_set' => 'changes configuration',
+      'mail' => 'sends mail',
+      'header' => 'sets headers',
+      'proc_nice' => 'process management',
+      'proc_terminate' => 'process management',
+      'proc_close' => 'process management',
+      'pfsockopen' => 'socket management',
+      'fsockopen' => 'socket management',
+      'apache_child_terminate' => 'process management',
+      'posix_kill' => 'process management',
+      'posix_mkfifo' => 'process management',
+      'posix_setpgid' => 'process management',
+      'posix_setsid' => 'process management',
+      'posix_setuid' => 'process management',
+      'fopen' => 'opens files',
+      'tmpfile' => 'opens files',
+      'bzopen' => 'opens files',
+      'gzopen' => 'opens files',
+      'SplFileObject->__construct' => 'opens files',
+      'chgrp' => 'modifies files',
+      'chmod' => 'modifies files',
+      'chown' => 'modifies files',
+      'copy' => 'modifies files',
+      'file_put_contents' => 'modifies files',
+      'lchgrp' => 'modifies files',
+      'lchown' => 'modifies files',
+      'link' => 'modifies files',
+      'mkdir' => 'modifies files',
+      'move_uploaded_file' => 'modifies files',
+      'rename' => 'modifies files',
+      'rmdir' => 'modifies files',
+      'symlink' => 'modifies files',
+      'tempnam' => 'modifies files',
+      'touch' => 'modifies files',
+      'unlink' => 'modifies files',
+      'imagepng' => 'modifies files',
+      'imagewbmp' => 'modifies files',
+      'image2wbmp' => 'modifies files',
+      'imagejpeg' => 'modifies files',
+      'imagexbm' => 'modifies files',
+      'imagegif' => 'modifies files',
+      'imagegd' => 'modifies files',
+      'imagegd2' => 'modifies files',
+      'iptcembed' => 'modifies files',
+      'ftp_get' => 'modifies files',
+      'ftp_nb_get' => 'modifies files',
+      'file_exists' => 'reads files',
+      'file_get_contents' => 'reads files',
+      'file' => 'reads files',
+      'fileatime' => 'reads files',
+      'filectime' => 'reads files',
+      'filegroup' => 'reads files',
+      'fileinode' => 'reads files',
+      'filemtime' => 'reads files',
+      'fileowner' => 'reads files',
+      'fileperms' => 'reads files',
+      'filesize' => 'reads files',
+      'filetype' => 'reads files',
+      'glob' => 'reads files',
+      'is_dir' => 'reads files',
+      'is_executable' => 'reads files',
+      'is_file' => 'reads files',
+      'is_link' => 'reads files',
+      'is_readable' => 'reads files',
+      'is_uploaded_file' => 'reads files',
+      'is_writable' => 'reads files',
+      'is_writeable' => 'reads files',
+      'linkinfo' => 'reads files',
+      'lstat' => 'reads files',
+      'parse_ini_file' => 'reads files',
+      'pathinfo' => 'reads files',
+      'readfile' => 'reads files',
+      'readlink' => 'reads files',
+      'realpath' => 'reads files',
+      'stat' => 'reads files',
+      'gzfile' => 'reads files',
+      'readgzfile' => 'reads files',
+      'getimagesize' => 'reads files',
+      'imagecreatefromgif' => 'reads files',
+      'imagecreatefromjpeg' => 'reads files',
+      'imagecreatefrompng' => 'reads files',
+      'imagecreatefromwbmp' => 'reads files',
+      'imagecreatefromxbm' => 'reads files',
+      'imagecreatefromxpm' => 'reads files',
+      'ftp_put' => 'reads files',
+      'ftp_nb_put' => 'reads files',
+      'exif_read_data' => 'reads files',
+      'read_exif_data' => 'reads files',
+      'exif_thumbnail' => 'reads files',
+      'exif_imagetype' => 'reads files',
+      'hash_file' => 'reads files',
+      'hash_hmac_file' => 'reads files',
+      'hash_update_file' => 'reads files',
+      'md5_file' => 'reads files',
+      'sha1_file' => 'reads files',
+      'highlight_file' => 'reads files',
+      'show_source' => 'reads files',
+      'php_strip_whitespace' => 'reads files',
+      'get_meta_tags' => 'reads files',
+    );
+    $columns = array(
+      'access',
+      'page',
+      'title',
+      'theme',
+    );
+    if (!empty($menu_path)) {
+      $path_result = db_query('SELECT path, access_callback, page_callback, title_callback, theme_callback FROM {menu_router} WHERE path IN (:menu_path)', array(':menu_path' => array_keys($menu_path)));
+      if (!$path_result->rowCount()) {
+        return FALSE;
+      }
+      foreach ($path_result as $row) {
+        foreach ($columns as $column) {
+          $callback = $column . '_callback';
+          $arguments = $column . '_arguments';
+          if ($row->$callback) {
+            if (!empty($dangerous_callbacks[$row->$callback])) {
+              $registry['menu_router'][$row->path] = $row->$callback;
+            }
+          }
+        }
+      }
+      return $registry;
+    }
+    else {
+      return FALSE;
+    }
+  }
+}

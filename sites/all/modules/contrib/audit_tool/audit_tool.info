@@ -1,0 +1,11 @@
+name = Drupal Audit Tool
+description = It helps to audit drupal 7 site by generating report.
+core = 7.x
+package = Valuebound
+configure = admin/config/audit-tool/settings
+
+; Information added by Drupal.org packaging script on 2020-05-19
+version = "7.x-1.3"
+core = "7.x"
+project = "audit_tool"
+datestamp = "1589874367"
