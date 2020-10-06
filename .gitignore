@@ -1,0 +1,31 @@
+# Ignore configuration files that may contain sensitive information.
+sites/*/*.sql
+sites/*/drushrc.php
+sites/*/pre-commit
+sites/*/settings*.php
+sites/*/settings.php
+
+# Ignore paths that contain user-generated content.
+sites/*/files
+sites/*/private
+sites/*/files/js/*
+sites/*/files/css/*
+.idea
+
+# Ignore Cache folder.
+cache
+cache/*
+
+# Ignore other files.
+*.o
+*.log
+*.DS_Store
+*.psd
+*.tar
+*.tar.gz
+*.sql
+*.zip
+*.rar
+*.7z
+robots.txt
+sftp-config.json
