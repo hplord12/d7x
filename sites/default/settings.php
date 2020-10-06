@@ -673,4 +673,3 @@ $conf['file_scan_ignore_directories'] = array(
   'node_modules',
   'bower_components',
 );
-// testing
