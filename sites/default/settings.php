@@ -676,8 +676,9 @@ $conf['file_scan_ignore_directories'] = array(
 
  // jbnjnjnkkknknkdvfdfa
 // fdsfdfdfgdsg
-//jsgjsfgjsfjgsdfdf
-//dnfjdjgjdjgjsdjggdsdg
+//jsgjsfgjsfjgs
+//dnfjdjgjdjgjsdjggdsdgfgsfg
 //sfgfsgs
 //gfssfgfsgsfg
+//gfgfsgsfg
 
